@@ -3573,24 +3573,46 @@ window.__ModuleLoader__.load({
           setStandaloneOpen(false)
           return
         }
-        try {
-          const url = new URL(window.location.href)
-          url.searchParams.set('dsh-ink-window', '1')
-          const win = window.open(
-            url.toString(),
-            'dsh-ink-window',
-            'popup=yes,width=1280,height=900',
-          )
-          if (win === null) {
+        void (async () => {
+          let url = ''
+          try {
+            const target = new URL(window.location.href)
+            target.searchParams.set('dsh-ink-window', '1')
+            url = target.toString()
+          } catch {
             flash(t('popupBlocked'))
             return
           }
-          standaloneWindowRef.current = win
-          setStandaloneOpen(true)
-          win.focus()
-        } catch {
-          flash(t('popupBlocked'))
-        }
+          try {
+            const result = await postJson('/window', { url })
+            if (
+              result.status === 200 &&
+              result.body?.ok === true &&
+              result.body?.mode === 'electron'
+            ) {
+              setStandaloneOpen(result.body.open === true)
+              return
+            }
+          } catch {
+            // Older host or DSH Web: fall through to a browser popup.
+          }
+          try {
+            const win = window.open(
+              url,
+              'dsh-ink-window',
+              'popup=yes,width=1280,height=900',
+            )
+            if (win === null) {
+              flash(t('popupBlocked'))
+              return
+            }
+            standaloneWindowRef.current = win
+            setStandaloneOpen(true)
+            win.focus()
+          } catch {
+            flash(t('popupBlocked'))
+          }
+        })()
       }
 
       function openCreate() {
@@ -3660,6 +3682,43 @@ window.__ModuleLoader__.load({
           }
         }, 1200)
         return () => clearInterval(timer)
+      }, [])
+
+      useEffect(() => {
+        let alive = true
+        void (async () => {
+          try {
+            const result = await request('/window')
+            if (!alive || result.status !== 200 || result.body?.mode !== 'electron') return
+            setStandaloneOpen(result.body.open === true)
+          } catch {
+            // No native window route on an older host.
+          }
+        })()
+        return () => {
+          alive = false
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [])
+
+      useEffect(() => {
+        let alive = true
+        const timer = setInterval(() => {
+          void (async () => {
+            try {
+              const result = await request('/window')
+              if (!alive || result.status !== 200 || result.body?.mode !== 'electron') return
+              setStandaloneOpen(result.body.open === true)
+            } catch {
+              // Ignore transient route failures.
+            }
+          })()
+        }, 3000)
+        return () => {
+          alive = false
+          clearInterval(timer)
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [])
 
       useEffect(() => {

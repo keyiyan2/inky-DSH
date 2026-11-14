@@ -1,6 +1,6 @@
 {
   "name": "inky-dsh",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "description": "Ink 写作面板：在 DSH 里写 inkle/ink 台词，用下拉选择 #speaker/#portrait/#layout 标签，保存即写入 Inky 项目并由 Inky 热更新。",
   "license": "MIT",

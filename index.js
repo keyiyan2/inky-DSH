@@ -39,6 +39,72 @@ const PREVIEW_TTL_MS = 10 * 60 * 1000
 const PREVIEW_MAX_SESSIONS = 20
 const PREVIEW_MAX_STEPS = 500
 
+/**
+ * Open a native Electron window on the DSH Desktop host. The window shares
+ * the main DSH window's session so the panel is already authenticated.
+ * Returns `{ ok: false, mode: 'web' }` when this host is not Electron.
+ */
+async function openDesktopInkWindow(url) {
+  if (process.versions.electron === undefined) return { ok: false, mode: 'web' }
+  const target = new URL(url)
+  if (target.protocol !== 'http:' && target.protocol !== 'https:') {
+    throw new Error('invalid window url')
+  }
+  if (!['127.0.0.1', 'localhost', '[::1]', '::1'].includes(target.hostname)) {
+    throw new Error('only local DSH windows are allowed')
+  }
+  let electron
+  try {
+    electron = await import('electron')
+  } catch {
+    return { ok: false, mode: 'web' }
+  }
+  const BrowserWindow = electron.BrowserWindow ?? electron.default?.BrowserWindow
+  if (typeof BrowserWindow !== 'function') return { ok: false, mode: 'web' }
+
+  let source
+  try {
+    source = BrowserWindow.getAllWindows().find((candidate) => {
+      try {
+        return new URL(candidate.webContents.getURL()).origin === target.origin
+      } catch {
+        return false
+      }
+    })
+  } catch {
+    // No window enumeration: fall back to the default session.
+  }
+
+  const options = {
+    width: 1280,
+    height: 900,
+    minWidth: 720,
+    minHeight: 520,
+    autoHideMenuBar: true,
+    title: 'Ink 写作',
+  }
+  if (source !== undefined) {
+    options.webPreferences = { session: source.webContents.session }
+  }
+  let win
+  try {
+    win = new BrowserWindow(options)
+  } catch {
+    // Some Electron builds reject the session option; default session still
+    // reaches the loopback DSH page in most setups.
+    options.webPreferences = undefined
+    win = new BrowserWindow(options)
+  }
+  win.setMenuBarVisibility(false)
+  try {
+    await win.loadURL(url)
+  } catch (error) {
+    win.close()
+    throw error
+  }
+  return { ok: true, mode: 'electron', window: win }
+}
+
 /** Display text for one ink runtime value (int/float/string/bool/list). */
 function previewVariableText(value) {
   if (value === null || value === undefined) return ''
@@ -279,6 +345,13 @@ export function apply(ctx, config) {
     }
   }
 
+  ctx.effect(() => () => {
+    if (standaloneWindow !== null && !standaloneWindow.isDestroyed()) {
+      standaloneWindow.close()
+    }
+    standaloneWindow = null
+  })
+
   /**
    * Resolve the project root for one request. The panel may switch folders at
    * runtime, so each request can carry an explicit `dir`; without one the
@@ -379,8 +452,55 @@ export function apply(ctx, config) {
     })
   }
 
+  let standaloneWindow = null
+
   ctx.effect(() => {
     const disposers = []
+    disposers.push(
+      route(`${API_PREFIX}/window`, async (req, res) => {
+        if (req.method === 'GET') {
+          sendJson(res, 200, {
+            ok: true,
+            mode: process.versions.electron === undefined ? 'web' : 'electron',
+            open: standaloneWindow !== null && !standaloneWindow.isDestroyed(),
+          })
+          return
+        }
+        if (req.method !== 'POST') {
+          sendJson(res, 405, { ok: false, message: 'method not allowed' })
+          return
+        }
+        const body = await readJsonBody(req, 64 * 1024)
+        if (body === undefined) {
+          sendJson(res, 400, { ok: false, message: 'invalid body' })
+          return
+        }
+        if (standaloneWindow !== null && !standaloneWindow.isDestroyed()) {
+          standaloneWindow.close()
+          standaloneWindow = null
+          sendJson(res, 200, { ok: true, mode: 'electron', open: false })
+          return
+        }
+        try {
+          const result = await openDesktopInkWindow(String(body.url ?? ''))
+          if (result.ok !== true) {
+            sendJson(res, 200, { ok: false, mode: result.mode ?? 'web' })
+            return
+          }
+          standaloneWindow = result.window
+          standaloneWindow.once('closed', () => {
+            standaloneWindow = null
+          })
+          sendJson(res, 200, { ok: true, mode: 'electron', open: true })
+        } catch (error) {
+          sendJson(res, 200, {
+            ok: false,
+            mode: 'web',
+            message: String(error?.message ?? error),
+          })
+        }
+      }),
+    )
     disposers.push(
       route(`${API_PREFIX}/state`, async (req, res) => {
         if (req.method !== 'GET') {
