@@ -192,6 +192,32 @@ npm publish
 
 仓库包含 `.github/workflows/publish.yml`：在 GitHub 创建 Release（或手动触发 workflow）时自动发布到 npm。需要在仓库 Secrets 里配置 `NPM_TOKEN`（npm Automation token）；首次发布前先确认包名 `inky-dsh` 仍可用。
 
+## 更新
+
+### 用户更新
+
+- **从 npm 安装**：在 DSH 插件页检查更新 → 更新 `inky-dsh` → 重启 DSH。
+- **从 GitHub URL 安装**：git 安装是某个提交的快照，插件管理器不一定会自动跟随默认分支。更新时在插件页卸载 `inky-dsh`，再重新填一次 GitHub URL 安装；或者用命令行 remove 后再 add 同一个 URL。
+- 更新后如果改的是 Host 代码，需要重启 DSH；只改 Client 代码时刷新页面即可。
+
+### 维护者同步与发布
+
+本地开发副本（profile 的 `plugins/dsh-ink`）和 GitHub 仓库（`inky-DSH`）是两处文件，**编辑其中一处不会自动同步另一处**。
+
+1. 改完代码后，把源码同步到仓库：复制 `client.js`、`index.js`、`locale/`、`vendor/inkjs/`、`icon.svg`（按需）；**不要直接覆盖**仓库的 `package.json`、`cordis.patch.yml`、`README.md`（仓库里是公开包名 `inky-dsh` 和发布配置）。
+2. 更新版本号并提交/打 tag：
+
+```bash
+npm version patch   # 或手动改 package.json 的 version
+git add -A
+git commit -m "fix: ..."
+git tag v0.1.1
+git push origin main --tags
+```
+
+3. 发布：`npm publish`，或在 GitHub 创建 Release 让 workflow 自动发布；用户在 DSH 里更新后重启。
+4. 自己的 DSH 如果继续用 `plugins/dsh-ink` 这份本地副本：代码已经是最新，Client 改动刷新页面，Host 改动禁用再启用 `dsh-ink`（或重启 DSH）即可；如果想让自己的 profile 也改用 GitHub/npm 安装，先移除本地 `dsh-ink`，避免重复入口 id。
+
 ## 配置
 
 | 配置项 | 默认值 | 说明 |
