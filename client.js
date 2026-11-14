@@ -53,13 +53,14 @@ window.__ModuleLoader__.load({
       { key: 'check', labelKey: 'check' },
       { key: 'reload', labelKey: 'reloadFromDisk' },
       { key: 'refresh', labelKey: 'refresh' },
+      { key: 'popout', labelKey: 'popout' },
       { key: 'inky', labelKey: 'openInky' },
       { key: 'folder', labelKey: 'openFolder' },
     ]
     const ACTION_GROUPS = [
       ['filesPanel', 'composerPanel'],
       ['dir', 'vocab', 'outline', 'blueprint', 'preview'],
-      ['save', 'check', 'reload', 'refresh', 'inky'],
+      ['save', 'check', 'reload', 'refresh', 'popout', 'inky'],
       ['folder'],
     ]
     const UI_COLORS_KEY = 'dsh-ink:ui-colors'
@@ -251,6 +252,10 @@ window.__ModuleLoader__.load({
       refresh: '刷新',
       refreshHint: '刷新文件列表、词库和项目状态',
       refreshed: '已刷新',
+      popout: '独立窗口',
+      popoutClose: '关闭独立窗口',
+      popoutHint: '在单独窗口打开 Ink 面板',
+      popupBlocked: '窗口被浏览器拦截，请允许弹窗后重试',
       reload: '重读',
       discardPrompt: '当前文件还没保存，切换会丢失修改。继续吗？',
       composerTitle: '写一句',
@@ -471,6 +476,10 @@ window.__ModuleLoader__.load({
       refresh: 'Refresh',
       refreshHint: 'Refresh the file list, vocabulary and project state',
       refreshed: 'Refreshed',
+      popout: 'Pop out',
+      popoutClose: 'Close window',
+      popoutHint: 'Open the Ink panel in a separate window',
+      popupBlocked: 'The browser blocked the window; allow popups and retry',
       reload: 'Reload',
       discardPrompt: 'The current file has unsaved changes. Switch anyway?',
       composerTitle: 'Write a line',
@@ -2142,6 +2151,16 @@ window.__ModuleLoader__.load({
     // ------------------------------------------------------------------ panel
 
     function InkPanel(props) {
+      const standaloneMode = (() => {
+        try {
+          if (typeof window === 'undefined') return false
+          return new URLSearchParams(window.location.search).get('dsh-ink-window') === '1'
+        } catch {
+          return false
+        }
+      })()
+      const [standaloneOpen, setStandaloneOpen] = useState(false)
+      const standaloneWindowRef = useRef(null)
       const [state, setState] = useState(null)
       const [error, setError] = useState('')
       const [notice, setNotice] = useState('')
@@ -3546,6 +3565,34 @@ window.__ModuleLoader__.load({
         flash(next.length === 0 ? t('noIssues') : `${next.length} ${t('issues')}`)
       }
 
+      function toggleStandaloneWindow() {
+        const existing = standaloneWindowRef.current
+        if (existing !== null && !existing.closed) {
+          existing.close()
+          standaloneWindowRef.current = null
+          setStandaloneOpen(false)
+          return
+        }
+        try {
+          const url = new URL(window.location.href)
+          url.searchParams.set('dsh-ink-window', '1')
+          const win = window.open(
+            url.toString(),
+            'dsh-ink-window',
+            'popup=yes,width=1280,height=900',
+          )
+          if (win === null) {
+            flash(t('popupBlocked'))
+            return
+          }
+          standaloneWindowRef.current = win
+          setStandaloneOpen(true)
+          win.focus()
+        } catch {
+          flash(t('popupBlocked'))
+        }
+      }
+
       function openCreate() {
         setCreateDraft('')
         setCreateKind('file')
@@ -3602,6 +3649,17 @@ window.__ModuleLoader__.load({
           if (noticeTimer.current !== 0) clearTimeout(noticeTimer.current)
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [])
+
+      useEffect(() => {
+        const timer = setInterval(() => {
+          const win = standaloneWindowRef.current
+          if (win !== null && win.closed) {
+            standaloneWindowRef.current = null
+            setStandaloneOpen(false)
+          }
+        }, 1200)
+        return () => clearInterval(timer)
       }, [])
 
       useEffect(() => {
@@ -5543,6 +5601,22 @@ window.__ModuleLoader__.load({
           },
           t('refresh'),
         ),
+        ...(standaloneMode
+          ? []
+          : [
+              h(
+                Btn,
+                {
+                  key: 'popout',
+                  icon: 'external',
+                  iconOnly,
+                  onClick: toggleStandaloneWindow,
+                  primary: standaloneOpen,
+                  title: t('popoutHint'),
+                },
+                standaloneOpen ? t('popoutClose') : t('popout'),
+              ),
+            ]),
         h(
           Btn,
           {
@@ -7946,12 +8020,35 @@ window.__ModuleLoader__.load({
     // ------------------------------------------------------------------- apply
 
     return {
-      inject: ['slots', 'locale', 'uiWorkspace'],
+      inject: ['slots', 'locale', 'uiWorkspace', 'layout'],
       apply(ctx) {
         ctx.effect(() => ctx.locale.register(NS, 'zh', zh))
         ctx.effect(() => ctx.locale.register(NS, 'en', en))
         const translate = ctx.locale.bind(NS)
         baseTranslate = (key) => translate(key)
+
+        const standalone = (() => {
+          try {
+            return new URLSearchParams(window.location.search).get('dsh-ink-window') === '1'
+          } catch {
+            return false
+          }
+        })()
+        if (standalone) {
+          ctx.effect(() => {
+            let attempts = 0
+            const timer = setInterval(() => {
+              attempts += 1
+              try {
+                ctx.layout.selectPanel(PANEL_ID)
+              } catch {
+                // The panel list may not be ready yet; retry briefly.
+              }
+              if (attempts >= 10) clearInterval(timer)
+            }, 300)
+            return () => clearInterval(timer)
+          })
+        }
 
         ctx.slots.inject('main', () =>
           ctx.slots.inject('sidebar.panellist', () => {
