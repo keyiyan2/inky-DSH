@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Ink 写作面板",
+    "description": "在 DSH 里写 inkle/ink 台词，用下拉选择 #speaker / #portrait / #layout 标签，保存后直接写入 Inky 项目并由 Inky 热更新。"
+  }
+}
