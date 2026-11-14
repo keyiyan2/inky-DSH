@@ -13,16 +13,19 @@
  */
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { appendFileSync, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { dirname, extname, join, relative, resolve, sep } from 'node:path'
+import { tmpdir } from 'node:os'
+import { fileURLToPath } from 'node:url'
 import z from '@deepseek-ai/schemastery'
 // Vendored copy of the official ink compiler (inkjs, MIT). A linked local
 // bundle does not get its npm dependencies installed, so the compiler ships
 // with the panel instead of being resolved from node_modules.
 import { Compiler } from './vendor/inkjs/ink-full.mjs'
 
-export const inject = ['webServer', 'connection']
+export const inject = ['webServer', 'connection', 'webApp']
 
 export const Config = z.object({
   projectDir: z.string().default('D:\\inky\\project'),
@@ -39,40 +42,170 @@ const PREVIEW_TTL_MS = 10 * 60 * 1000
 const PREVIEW_MAX_SESSIONS = 20
 const PREVIEW_MAX_STEPS = 500
 
+const WINDOW_DEBUG_LOG = join(dirname(fileURLToPath(import.meta.url)), 'window-debug.log')
+const PRELOAD_PATH = join(dirname(fileURLToPath(import.meta.url)), 'preload.cjs')
+const ICON_PATH = join(dirname(fileURLToPath(import.meta.url)), 'icon.png')
+const ICON_SVG_PATH = join(dirname(fileURLToPath(import.meta.url)), 'icon.svg')
+const SHARED_STATE_PATH = join(tmpdir(), 'dsh-ink-window-state.json')
+function windowDebug(message) {
+  try {
+    appendFileSync(WINDOW_DEBUG_LOG, `${new Date().toISOString()} ${message}\n`)
+  } catch {
+    // Diagnostics must never break the window route.
+  }
+}
+
+// Executed by the Host in the dedicated window after load. It does not depend
+// on the preload or the client standalone flag: it finds the Ink panel root
+// (marker first, inline --dsh-ink-accent as a fallback) and hides every
+// sibling on the path to <body>, keeping re-applying on React re-renders.
+const WINDOW_ISOLATE_SCRIPT = `(() => {
+  if (window.__dshInkHostIsolate) {
+    return { skipped: true, title: document.title }
+  }
+  window.__dshInkHostIsolate = true
+  let frame = 0
+  const findRoot = () => {
+    const marked = document.querySelector('[data-dsh-ink-root]')
+    if (marked !== null) return { root: marked, kind: 'marker' }
+    const divs = Array.from(document.querySelectorAll('div'))
+    for (const element of divs) {
+      if (!element.style) continue
+      if (element.style.getPropertyValue('--dsh-ink-accent') === '') continue
+      if (element.style.getPropertyValue('display') === 'none') continue
+      return { root: element, kind: 'accent' }
+    }
+    return { root: null, kind: 'none' }
+  }
+  const apply = () => {
+    const found = findRoot()
+    if (found.root === null) return found.kind
+    let node = found.root
+    while (node !== null && node !== document.body) {
+      const parent = node.parentElement
+      if (parent === null) break
+      for (const child of Array.from(parent.children)) {
+        if (child === node) continue
+        if (
+          child.style.getPropertyValue('display') !== 'none' ||
+          child.style.getPropertyPriority('display') !== 'important'
+        ) {
+          child.style.setProperty('display', 'none', 'important')
+        }
+      }
+      node = parent
+    }
+    let path = found.root
+    while (path !== null) {
+      const set = (name, value) => {
+        if (
+          path.style.getPropertyValue(name) !== value ||
+          path.style.getPropertyPriority(name) !== 'important'
+        ) {
+          path.style.setProperty(name, value, 'important')
+        }
+      }
+      set('width', '100%')
+      set('height', '100%')
+      set('min-width', '0')
+      set('min-height', '0')
+      set('overflow', 'hidden')
+      path = path.parentElement
+    }
+    const pin = (name, value) => {
+      if (
+        found.root.style.getPropertyValue(name) !== value ||
+        found.root.style.getPropertyPriority(name) !== 'important'
+      ) {
+        found.root.style.setProperty(name, value, 'important')
+      }
+    }
+    pin('position', 'fixed')
+    pin('inset', '0')
+    pin('width', '100vw')
+    pin('height', '100vh')
+    pin('z-index', '2147483000')
+    pin('overflow', 'hidden')
+    if (
+      document.body.style.getPropertyValue('overflow') !== 'hidden' ||
+      document.body.style.getPropertyPriority('overflow') !== 'important'
+    ) {
+      document.body.style.setProperty('overflow', 'hidden', 'important')
+    }
+    if (document.title !== 'Ink 写作') document.title = 'Ink 写作'
+    return found.kind
+  }
+  let rootKind = apply()
+  const schedule = () => {
+    if (frame !== 0) return
+    frame = window.requestAnimationFrame(() => {
+      frame = 0
+      rootKind = apply()
+    })
+  }
+  const observer = new MutationObserver(schedule)
+  observer.observe(document.documentElement, {
+    subtree: true,
+    childList: true,
+    attributes: true,
+    attributeFilter: ['style', 'class'],
+  })
+  return { rootKind, title: document.title }
+})()`
+
 /**
  * Open a native Electron window on the DSH Desktop host. The window shares
  * the main DSH window's session so the panel is already authenticated.
  * Returns `{ ok: false, mode: 'web' }` when this host is not Electron.
  */
-async function openDesktopInkWindow(url) {
+async function openDesktopInkWindow(url, sharedState = null) {
   if (process.versions.electron === undefined) return { ok: false, mode: 'web' }
   const target = new URL(url)
   if (target.protocol !== 'http:' && target.protocol !== 'https:') {
     throw new Error('invalid window url')
   }
-  if (!['127.0.0.1', 'localhost', '[::1]', '::1'].includes(target.hostname)) {
-    throw new Error('only local DSH windows are allowed')
-  }
   let electron
   try {
-    electron = await import('electron')
+    electron = createRequire(import.meta.url)('electron')
   } catch {
-    return { ok: false, mode: 'web' }
+    try {
+      electron = await import('electron')
+    } catch {
+      return { ok: false, mode: 'web' }
+    }
   }
   const BrowserWindow = electron.BrowserWindow ?? electron.default?.BrowserWindow
   if (typeof BrowserWindow !== 'function') return { ok: false, mode: 'web' }
 
+  try {
+    writeFileSync(SHARED_STATE_PATH, JSON.stringify(sharedState ?? {}), 'utf8')
+  } catch {
+    // The window still opens; only the copied state is missing.
+  }
+
   let source
   try {
-    source = BrowserWindow.getAllWindows().find((candidate) => {
-      try {
-        return new URL(candidate.webContents.getURL()).origin === target.origin
-      } catch {
-        return false
-      }
-    })
+    const windows = BrowserWindow.getAllWindows()
+    source =
+      windows.find((candidate) => {
+        try {
+          return new URL(candidate.webContents.getURL()).origin === target.origin
+        } catch {
+          return false
+        }
+      }) ?? windows[0]
   } catch {
     // No window enumeration: fall back to the default session.
+  }
+
+  if (source !== undefined) {
+    try {
+      // Drop cached plugin assets so a freshly built client is used in the
+      // standalone window.
+      await source.webContents.session.clearCache()
+    } catch {
+      // Cache clearing is best-effort.
+    }
   }
 
   const options = {
@@ -82,27 +215,115 @@ async function openDesktopInkWindow(url) {
     minHeight: 520,
     autoHideMenuBar: true,
     title: 'Ink 写作',
+    icon: ICON_PATH,
+  }
+  const project = target.searchParams.get('dsh-ink-project') ?? ''
+  const file = target.searchParams.get('dsh-ink-file') ?? ''
+  const standalonePreferences = {
+    preload: PRELOAD_PATH,
+    sandbox: false,
+    additionalArguments: [
+      `--dsh-ink-project=${project}`,
+      `--dsh-ink-file=${file}`,
+      `--dsh-ink-state=${SHARED_STATE_PATH}`,
+    ],
   }
   if (source !== undefined) {
-    options.webPreferences = { session: source.webContents.session }
+    standalonePreferences.session = source.webContents.session
   }
+  options.webPreferences = standalonePreferences
   let win
   try {
     win = new BrowserWindow(options)
   } catch {
     // Some Electron builds reject the session option; default session still
     // reaches the loopback DSH page in most setups.
-    options.webPreferences = undefined
+    options.webPreferences = {
+      preload: PRELOAD_PATH,
+      sandbox: false,
+      additionalArguments: standalonePreferences.additionalArguments,
+    }
     win = new BrowserWindow(options)
   }
   win.setMenuBarVisibility(false)
-  try {
-    await win.loadURL(url)
-  } catch (error) {
-    win.close()
-    throw error
-  }
+  windowDebug(`electron window created for ${target.origin}`)
+  win.webContents.on('did-finish-load', () => {
+    void win.webContents
+      .executeJavaScript(WINDOW_ISOLATE_SCRIPT)
+      .then((result) => windowDebug(`host isolate ${JSON.stringify(result)}`))
+      .catch((error) =>
+        windowDebug(`host isolate failed: ${String(error?.message ?? error)}`),
+      )
+  })
+  // Do not await loadURL: the DSH renderer can finish loading without
+  // resolving that promise, which used to leave the POST hanging and made
+  // the client fall back to the in-app panel.
+  win.loadURL(url).catch((error) => {
+    windowDebug(`electron load failed: ${String(error?.message ?? error)}`)
+  })
   return { ok: true, mode: 'electron', window: win }
+}
+
+/** Locate an Edge/Chrome executable for a borderless Windows app window. */
+function findWindowsBrowser() {
+  if (process.platform !== 'win32') return ''
+  const folders = [
+    process.env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)',
+    process.env.ProgramFiles ?? 'C:\\Program Files',
+  ]
+  const candidates = []
+  for (const folder of folders) {
+    candidates.push(join(folder, 'Microsoft', 'Edge', 'Application', 'msedge.exe'))
+  }
+  for (const folder of folders) {
+    candidates.push(join(folder, 'Google', 'Chrome', 'Application', 'chrome.exe'))
+  }
+  const localAppData = process.env.LOCALAPPDATA
+  if (localAppData !== undefined && localAppData !== '') {
+    candidates.push(
+      join(localAppData, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+    )
+    candidates.push(
+      join(localAppData, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+    )
+  }
+  candidates.push('C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe')
+  candidates.push('C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe')
+  candidates.push('C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe')
+  candidates.push('C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe')
+  return candidates.find((candidate) => existsSync(candidate)) ?? ''
+}
+
+/**
+ * Open a real Windows app window with Edge/Chrome's --app mode. It is a
+ * separate OS window (no address bar) and does not need window.open, so the
+ * DSH shell cannot block it. Returns `{ ok: false, mode: 'web' }` when no
+ * Chromium browser is available.
+ */
+function openWindowsAppWindow(url) {
+  const browser = findWindowsBrowser()
+  windowDebug(`edge browser=${browser === '' ? '(none)' : browser}`)
+  if (browser === '') return { ok: false, mode: 'web' }
+  const profile = join(tmpdir(), 'dsh-ink-window-profile')
+  try {
+    const child = spawn(
+      browser,
+      [
+        `--app=${url}`,
+        '--window-size=1280,900',
+        `--user-data-dir=${profile}`,
+        '--no-first-run',
+        '--no-default-browser-check',
+      ],
+      { detached: true, stdio: 'ignore' },
+    )
+    child.unref()
+    windowDebug(`edge spawned pid=${child.pid ?? ''}`)
+    return { ok: true, mode: 'windows', child }
+  } catch (error) {
+    windowDebug(`edge spawn failed: ${String(error?.message ?? error)}`)
+    return { ok: false, mode: 'web' }
+  }
 }
 
 /** Display text for one ink runtime value (int/float/string/bool/list). */
@@ -349,7 +570,15 @@ export function apply(ctx, config) {
     if (standaloneWindow !== null && !standaloneWindow.isDestroyed()) {
       standaloneWindow.close()
     }
+    if (
+      standaloneChild !== null &&
+      standaloneChild.exitCode === null &&
+      !standaloneChild.killed
+    ) {
+      standaloneChild.kill()
+    }
     standaloneWindow = null
+    standaloneChild = null
   })
 
   /**
@@ -452,17 +681,246 @@ export function apply(ctx, config) {
     })
   }
 
+  // The wrapper page only serves the framed DSH application; it carries no
+  // project data itself, so it is safe to serve without the API auth. The
+  // iframe URL inside is still the authenticated DSH URL.
+  function publicRoute(path, handler) {
+    return ctx.webServer.register({
+      kind: 'exact',
+      path,
+      handler: async (req, res) => {
+        try {
+          await handler(req, res)
+        } catch (error) {
+          sendJson(res, 500, { ok: false, message: String(error?.message ?? error) })
+        }
+      },
+    })
+  }
+
   let standaloneWindow = null
+  let standaloneChild = null
+  let sharedStorage = {}
+  let sharedTabs = []
+  let sharedBuffers = {}
+
+  function standaloneIsOpen() {
+    if (standaloneWindow !== null && !standaloneWindow.isDestroyed()) return true
+    return (
+      standaloneChild !== null &&
+      standaloneChild.exitCode === null &&
+      !standaloneChild.killed
+    )
+  }
+
+  function closeStandalone() {
+    if (standaloneWindow !== null && !standaloneWindow.isDestroyed()) {
+      standaloneWindow.close()
+    }
+    standaloneWindow = null
+    if (
+      standaloneChild !== null &&
+      standaloneChild.exitCode === null &&
+      !standaloneChild.killed
+    ) {
+      standaloneChild.kill()
+    }
+    standaloneChild = null
+  }
 
   ctx.effect(() => {
     const disposers = []
     disposers.push(
+      publicRoute(`${API_PREFIX}/icon.png`, async (req, res) => {
+        res.writeHead(200, {
+          'content-type': 'image/png',
+          'cache-control': 'public, max-age=86400',
+        })
+        res.end(readFileSync(ICON_PATH))
+      }),
+    )
+    disposers.push(
+      publicRoute(`${API_PREFIX}/icon.svg`, async (req, res) => {
+        res.writeHead(200, {
+          'content-type': 'image/svg+xml',
+          'cache-control': 'public, max-age=86400',
+        })
+        res.end(readFileSync(ICON_SVG_PATH))
+      }),
+    )
+    disposers.push(
+      publicRoute(`${API_PREFIX}/manifest.webmanifest`, async (req, res) => {
+        const manifest = {
+          name: 'Ink 写作',
+          short_name: 'Ink',
+          start_url: `${API_PREFIX}/standalone`,
+          display: 'standalone',
+          background_color: '#2b2f3a',
+          theme_color: '#2b2f3a',
+          icons: [
+            {
+              src: `${API_PREFIX}/icon.png`,
+              sizes: '256x256',
+              type: 'image/png',
+              purpose: 'any',
+            },
+          ],
+        }
+        res.writeHead(200, {
+          'content-type': 'application/manifest+json',
+          'cache-control': 'no-store',
+        })
+        res.end(JSON.stringify(manifest))
+      }),
+    )
+    disposers.push(
+      publicRoute(`${API_PREFIX}/standalone`, async (req, res) => {
+        if (req.method !== 'GET') {
+          sendJson(res, 405, { ok: false, message: 'method not allowed' })
+          return
+        }
+        const requestUrl = new URL(req.url ?? '/', 'http://localhost')
+        let iframeUrl = ''
+        try {
+          const candidate = new URL(String(requestUrl.searchParams.get('url') ?? ''))
+          if (candidate.protocol !== 'http:' && candidate.protocol !== 'https:') {
+            throw new Error('invalid frame url')
+          }
+          iframeUrl = candidate.toString()
+        } catch (error) {
+          sendJson(res, 400, { ok: false, message: String(error?.message ?? error) })
+          return
+        }
+        const iframeJson = JSON.stringify(iframeUrl).replace(/</g, '\\u003c')
+        const storageJson = JSON.stringify(sharedStorage).replace(/</g, '\\u003c')
+        const iconDataUrl = `data:image/png;base64,${readFileSync(ICON_PATH).toString('base64')}`
+        const tabsJson = JSON.stringify(sharedTabs).replace(/</g, '\\u003c')
+        const buffersJson = JSON.stringify(sharedBuffers).replace(/</g, '\\u003c')
+        const html = `<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" type="image/png" href="${iconDataUrl}">
+<link rel="manifest" href="${API_PREFIX}/manifest.webmanifest">
+<title>Ink 写作</title>
+<style>html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#111}iframe{border:0;width:100%;height:100%;display:block}</style>
+</head>
+<body>
+<iframe id="ink-frame" title="Ink 写作"></iframe>
+<script>
+(() => {
+  const frame = document.getElementById('ink-frame')
+  const state = { observer: null, timer: 0 }
+  const findRoot = (doc) => {
+    const marked = doc.querySelector('[data-dsh-ink-root]')
+    if (marked !== null) return marked
+    for (const element of Array.from(doc.querySelectorAll('div'))) {
+      if (!element.style) continue
+      if (element.style.getPropertyValue('--dsh-ink-accent') === '') continue
+      if (element.style.getPropertyValue('display') === 'none') continue
+      return element
+    }
+    return null
+  }
+  const clickInk = (doc) => {
+    const nodes = Array.from(doc.querySelectorAll('button, a, [role="button"], [role="tab"]'))
+    const ink = nodes.find((node) => (node.textContent ?? '').trim() === 'Ink')
+    if (ink !== undefined) ink.click()
+  }
+  const hide = (doc, root) => {
+    let node = root
+    while (node !== null && node !== doc.body) {
+      const parent = node.parentElement
+      if (parent === null) break
+      for (const child of Array.from(parent.children)) {
+        if (child === node) continue
+        if (child.style.getPropertyValue('display') !== 'none' || child.style.getPropertyPriority('display') !== 'important') child.style.setProperty('display','none','important')
+      }
+      node = parent
+    }
+    let path = root
+    while (path !== null) {
+      for (const pair of [['width','100%'],['height','100%'],['min-width','0'],['min-height','0'],['overflow','hidden']]) {
+        if (path.style.getPropertyValue(pair[0]) !== pair[1] || path.style.getPropertyPriority(pair[0]) !== 'important') path.style.setProperty(pair[0], pair[1], 'important')
+      }
+      path = path.parentElement
+    }
+    const pin = (name, value) => {
+      if (root.style.getPropertyValue(name) !== value || root.style.getPropertyPriority(name) !== 'important') root.style.setProperty(name, value, 'important')
+    }
+    pin('position', 'fixed')
+    pin('inset', '0')
+    pin('width', '100vw')
+    pin('height', '100vh')
+    pin('z-index', '2147483000')
+    pin('overflow', 'hidden')
+    if (doc.body.style.getPropertyValue('overflow') !== 'hidden' || doc.body.style.getPropertyPriority('overflow') !== 'important') doc.body.style.setProperty('overflow','hidden','important')
+    document.title = 'Ink 写作'
+  }
+  const attach = () => {
+    const doc = frame.contentDocument
+    if (doc === null) return
+    const root = findRoot(doc)
+    if (root === null) { clickInk(doc); return }
+    hide(doc, root)
+    if (state.observer === null) {
+      state.observer = new MutationObserver(() => {
+        if (state.timer !== 0) return
+        state.timer = requestAnimationFrame(() => { state.timer = 0; attach() })
+      })
+      state.observer.observe(doc.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ['style','class'] })
+    }
+  }
+  frame.addEventListener('load', attach)
+  try {
+    const view = frame.contentWindow
+    if (view !== null) {
+      for (const [key, value] of Object.entries(${storageJson})) view.localStorage.setItem(key, value)
+      view.localStorage.setItem('dsh-ink:shared-tabs', ${tabsJson})
+      view.localStorage.setItem('dsh-ink:shared-buffers', ${buffersJson})
+    }
+  } catch {}
+  frame.src = ${iframeJson}
+  setInterval(attach, 500)
+})()
+</script>
+</body>
+</html>`
+        res.writeHead(200, {
+          'content-type': 'text/html; charset=utf-8',
+          'cache-control': 'no-store',
+        })
+        res.end(html)
+      }),
+    )
+    disposers.push(
       route(`${API_PREFIX}/window`, async (req, res) => {
         if (req.method === 'GET') {
+          let mode = 'web'
+          if (process.versions.electron !== undefined) {
+            try {
+              const electron = await import('electron')
+              if (
+                typeof (electron.BrowserWindow ?? electron.default?.BrowserWindow) ===
+                'function'
+              ) {
+                mode = 'electron'
+              }
+            } catch {
+              // Electron is present but not importable from this host.
+            }
+          }
+          if (mode === 'web' && findWindowsBrowser() !== '') {
+            mode = 'windows'
+          }
+          windowDebug(
+            `GET mode=${mode} platform=${process.platform} electron=${process.versions.electron ?? '(none)'} edge=${findWindowsBrowser() === '' ? '(none)' : findWindowsBrowser()}`,
+          )
           sendJson(res, 200, {
             ok: true,
-            mode: process.versions.electron === undefined ? 'web' : 'electron',
-            open: standaloneWindow !== null && !standaloneWindow.isDestroyed(),
+            mode,
+            open: mode !== 'web' && standaloneIsOpen(),
           })
           return
         }
@@ -470,35 +928,135 @@ export function apply(ctx, config) {
           sendJson(res, 405, { ok: false, message: 'method not allowed' })
           return
         }
-        const body = await readJsonBody(req, 64 * 1024)
+        windowDebug('POST begin')
+        const body = await readJsonBody(req, 4 * 1024 * 1024)
         if (body === undefined) {
           sendJson(res, 400, { ok: false, message: 'invalid body' })
           return
         }
-        if (standaloneWindow !== null && !standaloneWindow.isDestroyed()) {
-          standaloneWindow.close()
-          standaloneWindow = null
-          sendJson(res, 200, { ok: true, mode: 'electron', open: false })
+        if (body.storage !== null && typeof body.storage === 'object') {
+          sharedStorage = {}
+          for (const [key, value] of Object.entries(body.storage)) {
+            if (typeof value === 'string' && key.startsWith('dsh-ink')) {
+              sharedStorage[key] = value
+            }
+          }
+        }
+        if (Array.isArray(body.tabs)) {
+          sharedTabs = body.tabs.filter((path) => typeof path === 'string')
+        }
+        if (body.buffers !== null && typeof body.buffers === 'object') {
+          sharedBuffers = {}
+          for (const [path, buffer] of Object.entries(body.buffers)) {
+            if (typeof path !== 'string' || buffer === null || typeof buffer !== 'object') continue
+            sharedBuffers[path] = {
+              content: String(buffer.content ?? ''),
+              dirty: buffer.dirty === true,
+              mtimeMs: Number(buffer.mtimeMs) || 0,
+            }
+          }
+        }
+        if (standaloneIsOpen()) {
+          const wasElectron = standaloneWindow !== null && !standaloneWindow.isDestroyed()
+          closeStandalone()
+          sendJson(res, 200, {
+            ok: true,
+            mode: wasElectron ? 'electron' : 'windows',
+            open: false,
+          })
           return
         }
+        let clientUrl
         try {
-          const result = await openDesktopInkWindow(String(body.url ?? ''))
-          if (result.ok !== true) {
-            sendJson(res, 200, { ok: false, mode: result.mode ?? 'web' })
-            return
+          // The Desktop renderer may be a file:// page; only its query string
+          // (project/file) is meaningful. The window itself must use the
+          // advertised Web GUI URL from the Host.
+          clientUrl = new URL(String(body.url ?? ''), 'http://localhost')
+        } catch {
+          clientUrl = new URL('http://localhost')
+        }
+        let target
+        try {
+          target = new URL(ctx.webApp.getAdvertisedUrl())
+          if (target.protocol !== 'http:' && target.protocol !== 'https:') {
+            throw new Error('invalid window url')
           }
-          standaloneWindow = result.window
-          standaloneWindow.once('closed', () => {
-            standaloneWindow = null
-          })
-          sendJson(res, 200, { ok: true, mode: 'electron', open: true })
+          target.searchParams.set('dsh-ink-window', '1')
+          for (const key of ['dsh-ink-project', 'dsh-ink-file']) {
+            const value = clientUrl.searchParams.get(key)
+            if (value !== null) target.searchParams.set(key, value)
+          }
         } catch (error) {
           sendJson(res, 200, {
             ok: false,
             mode: 'web',
             message: String(error?.message ?? error),
           })
+          return
         }
+        windowDebug(`target ${target.origin}`)
+
+        let electronResult = { ok: false, mode: 'web' }
+        try {
+          electronResult = await openDesktopInkWindow(target.toString(), {
+            storage: sharedStorage,
+            tabs: sharedTabs,
+            buffers: sharedBuffers,
+          })
+        } catch (error) {
+          windowDebug(`electron failed: ${String(error?.message ?? error)}`)
+        }
+        windowDebug(`electron ok=${electronResult.ok === true}`)
+        if (electronResult.ok === true) {
+          standaloneWindow = electronResult.window
+          standaloneWindow.once('closed', () => {
+            standaloneWindow = null
+          })
+          sendJson(res, 200, { ok: true, mode: 'electron', open: true })
+          return
+        }
+
+        try {
+          // authenticatedUrl expects a clean application URL; keep only the
+          // app path and the parameters the Ink window needs.
+          const appUrl = new URL(target.origin + target.pathname)
+          appUrl.searchParams.set('dsh-ink-window', '1')
+          for (const key of ['dsh-ink-project', 'dsh-ink-file']) {
+            const value = target.searchParams.get(key)
+            if (value !== null) appUrl.searchParams.set(key, value)
+          }
+          const authenticatedApp =
+            typeof ctx.connection.authenticatedUrl === 'function'
+              ? ctx.connection.authenticatedUrl(appUrl.toString())
+              : appUrl.toString()
+          // The wrapper page itself is public; the framed DSH URL above is the
+          // authenticated application URL.
+          const wrapper = new URL(`${API_PREFIX}/standalone`, appUrl.origin)
+          wrapper.searchParams.set('url', authenticatedApp)
+          windowDebug('wrapper public')
+          const windowsResult = openWindowsAppWindow(wrapper.toString())
+          if (windowsResult.ok === true) {
+            standaloneChild = windowsResult.child
+            standaloneChild.once('exit', () => {
+              standaloneChild = null
+            })
+            standaloneChild.once('error', () => {
+              standaloneChild = null
+            })
+            sendJson(res, 200, { ok: true, mode: 'windows', open: true })
+            return
+          }
+        } catch (error) {
+          windowDebug(`edge/auth failed: ${String(error?.message ?? error)}`)
+          sendJson(res, 200, {
+            ok: false,
+            mode: 'web',
+            message: String(error?.message ?? error),
+          })
+          return
+        }
+        windowDebug('no system window available')
+        sendJson(res, 200, { ok: false, mode: 'web' })
       }),
     )
     disposers.push(

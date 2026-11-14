@@ -11,6 +11,13 @@ window.__ModuleLoader__.load({
   id: '@local/dsh-ink',
   factory(require) {
     const React = require('react')
+    const ReactDOM = (() => {
+      try {
+        return require('react-dom')
+      } catch {
+        return null
+      }
+    })()
     const h = React.createElement
     const { useEffect, useLayoutEffect, useMemo, useRef, useState } = React
 
@@ -255,6 +262,11 @@ window.__ModuleLoader__.load({
       popout: '独立窗口',
       popoutClose: '关闭独立窗口',
       popoutHint: '在单独窗口打开 Ink 面板',
+      floatingTitle: 'Ink 写作 · 独立窗口',
+      minimizeWindow: '最小化',
+      maximizeWindow: '最大化',
+      restoreWindow: '还原',
+      windowFallback: 'Host 未提供系统窗口，已打开内部浮窗',
       popupBlocked: '窗口被浏览器拦截，请允许弹窗后重试',
       reload: '重读',
       discardPrompt: '当前文件还没保存，切换会丢失修改。继续吗？',
@@ -479,6 +491,11 @@ window.__ModuleLoader__.load({
       popout: 'Pop out',
       popoutClose: 'Close window',
       popoutHint: 'Open the Ink panel in a separate window',
+      floatingTitle: 'Ink · Floating window',
+      minimizeWindow: 'Minimize',
+      maximizeWindow: 'Maximize',
+      restoreWindow: 'Restore',
+      windowFallback: 'The host offered no system window; opened the in-app panel',
       popupBlocked: 'The browser blocked the window; allow popups and retry',
       reload: 'Reload',
       discardPrompt: 'The current file has unsaved changes. Switch anyway?',
@@ -831,6 +848,72 @@ window.__ModuleLoader__.load({
         background: 'var(--dsw-alias-bg-base)',
         color: 'var(--dsw-alias-label-primary)',
         fontSize: 13,
+      },
+      floatingWindow: {
+        position: 'fixed',
+        zIndex: 10000,
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden',
+        border: '1px solid var(--dsw-alias-border-l1)',
+        borderRadius: 10,
+        background: 'var(--dsw-alias-bg-base)',
+        boxShadow: '0 18px 60px rgba(0, 0, 0, 0.45)',
+      },
+      floatingBar: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+        height: 32,
+        flex: '0 0 32px',
+        padding: '0 10px',
+        borderBottom: '1px solid var(--dsw-alias-border-l1)',
+        background: 'var(--dsw-alias-bg-layer-1)',
+        cursor: 'move',
+        userSelect: 'none',
+      },
+      floatingClose: {
+        width: 24,
+        height: 24,
+        padding: 0,
+        border: '1px solid var(--dsw-alias-border-l1)',
+        borderRadius: 6,
+        background: 'transparent',
+        color: 'var(--dsw-alias-label-secondary)',
+        cursor: 'pointer',
+        font: 'inherit',
+        fontSize: 14,
+      },
+      floatingAction: {
+        width: 24,
+        height: 24,
+        padding: 0,
+        border: '1px solid var(--dsw-alias-border-l1)',
+        borderRadius: 6,
+        background: 'transparent',
+        color: 'var(--dsw-alias-label-secondary)',
+        cursor: 'pointer',
+        font: 'inherit',
+        fontSize: 12,
+        lineHeight: 1,
+      },
+      floatingBody: {
+        flex: 1,
+        minHeight: 0,
+        display: 'flex',
+        overflow: 'hidden',
+      },
+      floatingResize: {
+        position: 'absolute',
+        right: 2,
+        bottom: 2,
+        width: 16,
+        height: 16,
+        borderRadius: 2,
+        cursor: 'nwse-resize',
+        opacity: 0.6,
+        background:
+          'linear-gradient(135deg, transparent 50%, var(--dsw-alias-label-secondary) 50%)',
       },
       header: {
         display: 'flex',
@@ -2151,9 +2234,19 @@ window.__ModuleLoader__.load({
     // ------------------------------------------------------------------ panel
 
     function InkPanel(props) {
+      const standaloneBridge = (() => {
+        try {
+          if (typeof window === 'undefined') return null
+          const bridge = window.__DSH_INK_STANDALONE__
+          return bridge !== null && typeof bridge === 'object' ? bridge : null
+        } catch {
+          return null
+        }
+      })()
       const standaloneMode = (() => {
         try {
           if (typeof window === 'undefined') return false
+          if (standaloneBridge !== null) return true
           return new URLSearchParams(window.location.search).get('dsh-ink-window') === '1'
         } catch {
           return false
@@ -2161,6 +2254,14 @@ window.__ModuleLoader__.load({
       })()
       const [standaloneOpen, setStandaloneOpen] = useState(false)
       const standaloneWindowRef = useRef(null)
+      const nativeWindowMode = useRef(false)
+      const floating = props?.floating === true
+      const [floatingOpen, setFloatingOpen] = useState(false)
+      const [floatingRect, setFloatingRect] = useState(null)
+      const [floatingMinimized, setFloatingMinimized] = useState(false)
+      const [floatingMaximized, setFloatingMaximized] = useState(false)
+      const floatingRestoreRef = useRef(null)
+      const floatingDragRef = useRef(null)
       const [state, setState] = useState(null)
       const [error, setError] = useState('')
       const [notice, setNotice] = useState('')
@@ -2176,7 +2277,18 @@ window.__ModuleLoader__.load({
       const [showBackToTop, setShowBackToTop] = useState(false)
       const [lineKind, setLineKind] = useState('line')
       const [text, setText] = useState('')
-      const [openTabs, setOpenTabs] = useState([])
+      const [openTabs, setOpenTabs] = useState(() => {
+        try {
+          const raw = localStorage.getItem('dsh-ink:shared-tabs')
+          if (raw === null) return []
+          const parsed = JSON.parse(raw)
+          return Array.isArray(parsed)
+            ? parsed.filter((path) => typeof path === 'string')
+            : []
+        } catch {
+          return []
+        }
+      })
       const [welcomePath, setWelcomePath] = useState('')
       const [recentFiles, setRecentFiles] = useState(() => {
         const stored = readStorage(RECENT_FILES_KEY, [])
@@ -2263,7 +2375,31 @@ window.__ModuleLoader__.load({
       const [contentWidth, setContentWidth] = useState(600)
       // '' means "use the plugin's configured projectDir"; otherwise a folder
       // the user picked in this panel, remembered across reloads.
-      const [rootDir, setRootDir] = useState(() => readStorage(PROJECT_DIR_KEY, ''))
+      const requestedRoot = String(
+        props?.initialRoot ??
+          standaloneBridge?.root ??
+          (() => {
+            try {
+              return new URLSearchParams(window.location.search).get('dsh-ink-project') ?? ''
+            } catch {
+              return ''
+            }
+          })(),
+      )
+      const requestedFile = String(
+        props?.initialFile ??
+          standaloneBridge?.file ??
+          (() => {
+            try {
+              return new URLSearchParams(window.location.search).get('dsh-ink-file') ?? ''
+            } catch {
+              return ''
+            }
+          })(),
+      )
+      const [rootDir, setRootDir] = useState(() =>
+        requestedRoot !== '' ? requestedRoot : readStorage(PROJECT_DIR_KEY, ''),
+      )
       const [dirEditorOpen, setDirEditorOpen] = useState(false)
       const [dirDraft, setDirDraft] = useState('')
       const [vocabOpen, setVocabOpen] = useState(false)
@@ -2397,7 +2533,33 @@ window.__ModuleLoader__.load({
       const previewLineId = useRef(0)
       const bandScrollRef = useRef(null)
       const foldMarkerScrollRef = useRef(null)
-      const buffersRef = useRef(new Map())
+      const buffersRef = useRef(
+        (() => {
+          const map = new Map()
+          try {
+            const raw = localStorage.getItem('dsh-ink:shared-buffers')
+            if (raw === null) return map
+            const parsed = JSON.parse(raw)
+            if (parsed === null || typeof parsed !== 'object') return map
+            for (const [path, buffer] of Object.entries(parsed)) {
+              if (typeof path !== 'string' || buffer === null || typeof buffer !== 'object') continue
+              map.set(path, {
+                content: String(buffer.content ?? ''),
+                dirty: buffer.dirty === true,
+                mtimeMs: Number(buffer.mtimeMs) || 0,
+                caret: 0,
+                scrollTop: 0,
+                undo: [],
+                redo: [],
+                lastEdit: null,
+              })
+            }
+          } catch {
+            // Ignore malformed shared buffers.
+          }
+          return map
+        })(),
+      )
       const skipStashRef = useRef(false)
       const pendingScrollRef = useRef(null)
       const pendingCaretRef = useRef(null)
@@ -3230,6 +3392,12 @@ window.__ModuleLoader__.load({
             rootFiles[0] ??
             allFiles[0]
           if (pick !== undefined) await openFile(pick.path, true)
+          if (
+            requestedFile !== '' &&
+            allFiles.some((file) => file.path === requestedFile)
+          ) {
+            await openFile(requestedFile, true)
+          }
         }
       }
 
@@ -3565,54 +3733,204 @@ window.__ModuleLoader__.load({
         flash(next.length === 0 ? t('noIssues') : `${next.length} ${t('issues')}`)
       }
 
-      function toggleStandaloneWindow() {
-        const existing = standaloneWindowRef.current
-        if (existing !== null && !existing.closed) {
-          existing.close()
-          standaloneWindowRef.current = null
-          setStandaloneOpen(false)
+      function storageSnapshot() {
+        const entries = {}
+        try {
+          for (let index = 0; index < localStorage.length; index += 1) {
+            const key = localStorage.key(index)
+            if (key === null || !key.startsWith('dsh-ink')) continue
+            const value = localStorage.getItem(key)
+            if (value !== null) entries[key] = value
+          }
+        } catch {
+          // Ignore storage access failures.
+        }
+        return entries
+      }
+
+      function openFloatingWindow() {
+        const width = Math.min(1200, Math.max(560, Math.round(window.innerWidth * 0.86)))
+        const height = Math.min(880, Math.max(360, Math.round(window.innerHeight * 0.84)))
+        setFloatingRect({
+          left: Math.max(8, Math.round((window.innerWidth - width) / 2)),
+          top: Math.max(8, Math.round((window.innerHeight - height) / 2)),
+          width,
+          height,
+        })
+        setFloatingMinimized(false)
+        setFloatingMaximized(false)
+        floatingRestoreRef.current = null
+        setFloatingOpen(true)
+      }
+
+      function closeFloatingWindow() {
+        setFloatingOpen(false)
+        setFloatingMinimized(false)
+        setFloatingMaximized(false)
+        floatingRestoreRef.current = null
+      }
+
+      function getFloatingMaxRect() {
+        const root = rootRef.current
+        if (root === null) {
+          return {
+            left: 8,
+            top: 8,
+            width: Math.max(320, window.innerWidth - 16),
+            height: Math.max(240, window.innerHeight - 16),
+          }
+        }
+        const rect = root.getBoundingClientRect()
+        return {
+          left: Math.max(0, Math.round(rect.left)),
+          top: Math.max(0, Math.round(rect.top)),
+          width: Math.max(320, Math.round(rect.width)),
+          height: Math.max(240, Math.round(rect.height)),
+        }
+      }
+
+      function toggleFloatingMaximize() {
+        if (floatingRect === null) return
+        if (floatingMaximized) {
+          const restore = floatingRestoreRef.current
+          setFloatingMaximized(false)
+          setFloatingMinimized(false)
+          if (restore !== null) setFloatingRect(restore)
+          floatingRestoreRef.current = null
           return
         }
-        void (async () => {
-          let url = ''
-          try {
-            const target = new URL(window.location.href)
-            target.searchParams.set('dsh-ink-window', '1')
-            url = target.toString()
-          } catch {
-            flash(t('popupBlocked'))
-            return
-          }
-          try {
-            const result = await postJson('/window', { url })
-            if (
-              result.status === 200 &&
-              result.body?.ok === true &&
-              result.body?.mode === 'electron'
-            ) {
-              setStandaloneOpen(result.body.open === true)
-              return
+        floatingRestoreRef.current = floatingRect
+        setFloatingMaximized(true)
+        setFloatingMinimized(false)
+        setFloatingRect(getFloatingMaxRect())
+      }
+
+      function toggleFloatingMinimize() {
+        setFloatingMinimized((previous) => !previous)
+      }
+
+      function startFloatingDrag(event) {
+        if (floatingMaximized || floatingRect === null) return
+        if (event.button !== 0) return
+        event.preventDefault()
+        const start = {
+          x: event.clientX,
+          y: event.clientY,
+          left: floatingRect.left,
+          top: floatingRect.top,
+        }
+        const onMove = (move) => {
+          setFloatingRect((previous) =>
+            previous === null
+              ? previous
+              : {
+                  ...previous,
+                  left: Math.min(
+                    Math.max(0, window.innerWidth - 140),
+                    Math.max(0, start.left + move.clientX - start.x),
+                  ),
+                  top: Math.min(
+                    Math.max(0, window.innerHeight - 60),
+                    Math.max(0, start.top + move.clientY - start.y),
+                  ),
+                },
+          )
+        }
+        const onUp = () => {
+          document.removeEventListener('mousemove', onMove)
+          document.removeEventListener('mouseup', onUp)
+        }
+        document.addEventListener('mousemove', onMove)
+        document.addEventListener('mouseup', onUp)
+      }
+
+      function startFloatingResize(event) {
+        if (floatingMaximized || floatingMinimized || floatingRect === null) return
+        if (event.button !== 0) return
+        event.preventDefault()
+        event.stopPropagation()
+        const start = {
+          x: event.clientX,
+          y: event.clientY,
+          width: floatingRect.width,
+          height: floatingRect.height,
+        }
+        const onMove = (move) => {
+          setFloatingRect((previous) =>
+            previous === null
+              ? previous
+              : {
+                  ...previous,
+                  width: Math.min(
+                    window.innerWidth - 8,
+                    Math.max(560, start.width + move.clientX - start.x),
+                  ),
+                  height: Math.min(
+                    window.innerHeight - 8,
+                    Math.max(360, start.height + move.clientY - start.y),
+                  ),
+                },
+          )
+        }
+        const onUp = () => {
+          document.removeEventListener('mousemove', onMove)
+          document.removeEventListener('mouseup', onUp)
+        }
+        document.addEventListener('mousemove', onMove)
+        document.addEventListener('mouseup', onUp)
+      }
+
+      function toggleStandaloneWindow() {
+        if (floatingOpen) {
+          closeFloatingWindow()
+          return
+        }
+        if (standaloneOpen && nativeWindowMode.current) {
+          void (async () => {
+            try {
+              const result = await postJson('/window', { url: window.location.href })
+              if (result.status === 200) setStandaloneOpen(result.body?.open === true)
+            } catch {
+              setStandaloneOpen(false)
             }
-          } catch {
-            // Older host or DSH Web: fall through to a browser popup.
-          }
-          try {
-            const win = window.open(
-              url,
-              'dsh-ink-window',
-              'popup=yes,width=1280,height=900',
-            )
-            if (win === null) {
-              flash(t('popupBlocked'))
-              return
+          })()
+          return
+        }
+        if (nativeWindowMode.current) {
+          void (async () => {
+            try {
+              const target = new URL(window.location.href)
+              target.searchParams.set('dsh-ink-window', '1')
+              target.searchParams.set('dsh-ink-project', rootDirRef.current)
+              if (current !== '') target.searchParams.set('dsh-ink-file', current)
+              const buffers = {}
+              for (const [path, buffer] of buffersRef.current.entries()) {
+                buffers[path] = {
+                  content: buffer.content,
+                  dirty: buffer.dirty === true,
+                  mtimeMs: buffer.mtimeMs,
+                }
+              }
+              const result = await postJson('/window', {
+                url: target.toString(),
+                storage: storageSnapshot(),
+                tabs: openTabs,
+                buffers,
+              })
+              if (result.status === 200 && result.body?.ok === true) {
+                setStandaloneOpen(result.body.open === true)
+                return
+              }
+              flash(result.body?.message || t('windowFallback'))
+            } catch {
+              flash(t('windowFallback'))
             }
-            standaloneWindowRef.current = win
-            setStandaloneOpen(true)
-            win.focus()
-          } catch {
-            flash(t('popupBlocked'))
-          }
-        })()
+            openFloatingWindow()
+          })()
+          return
+        }
+        flash(t('windowFallback'))
+        openFloatingWindow()
       }
 
       function openCreate() {
@@ -3674,6 +3992,147 @@ window.__ModuleLoader__.load({
       }, [])
 
       useEffect(() => {
+        if (!standaloneMode) return
+        const root = rootRef.current
+        if (root === null) return
+        const hidden = new Map()
+        const resized = new Map()
+        let bodyOverflow = null
+        let previousTitle = null
+        let frame = 0
+
+        const hide = (element) => {
+          if (!hidden.has(element)) {
+            hidden.set(element, {
+              value: element.style.getPropertyValue('display'),
+              priority: element.style.getPropertyPriority('display'),
+            })
+          }
+          if (
+            element.style.getPropertyValue('display') !== 'none' ||
+            element.style.getPropertyPriority('display') !== 'important'
+          ) {
+            element.style.setProperty('display', 'none', 'important')
+          }
+        }
+
+        const resize = (element) => {
+          if (!resized.has(element)) {
+            const snapshot = {}
+            for (const name of ['width', 'height', 'min-width', 'min-height', 'overflow']) {
+              snapshot[name] = [
+                element.style.getPropertyValue(name),
+                element.style.getPropertyPriority(name),
+              ]
+            }
+            resized.set(element, snapshot)
+          }
+          const set = (name, value) => {
+            if (
+              element.style.getPropertyValue(name) !== value ||
+              element.style.getPropertyPriority(name) !== 'important'
+            ) {
+              element.style.setProperty(name, value, 'important')
+            }
+          }
+          set('width', '100%')
+          set('height', '100%')
+          set('min-width', '0')
+          set('min-height', '0')
+          set('overflow', 'hidden')
+        }
+
+        const apply = () => {
+          let node = root
+          while (node !== null && node !== document.body) {
+            const parent = node.parentElement
+            if (parent === null) break
+            for (const child of Array.from(parent.children)) {
+              if (child !== node) hide(child)
+            }
+            node = parent
+          }
+          let path = root
+          while (path !== null) {
+            resize(path)
+            path = path.parentElement
+          }
+          const pin = (name, value) => {
+            if (
+              root.style.getPropertyValue(name) !== value ||
+              root.style.getPropertyPriority(name) !== 'important'
+            ) {
+              root.style.setProperty(name, value, 'important')
+            }
+          }
+          // Pin the Ink root to the viewport. Hiding the DSH shell alone left
+          // the app's grid/column offsets in place; the fixed root bypasses
+          // them and lets the plugin's own flex layout fill the window.
+          pin('position', 'fixed')
+          pin('inset', '0')
+          pin('width', '100vw')
+          pin('height', '100vh')
+          pin('z-index', '2147483000')
+          pin('overflow', 'hidden')
+          if (bodyOverflow === null) {
+            bodyOverflow = [
+              document.body.style.getPropertyValue('overflow'),
+              document.body.style.getPropertyPriority('overflow'),
+            ]
+          }
+          if (
+            document.body.style.getPropertyValue('overflow') !== 'hidden' ||
+            document.body.style.getPropertyPriority('overflow') !== 'important'
+          ) {
+            document.body.style.setProperty('overflow', 'hidden', 'important')
+          }
+          if (previousTitle === null) previousTitle = document.title
+          if (document.title !== 'Ink 写作') document.title = 'Ink 写作'
+        }
+
+        const schedule = () => {
+          if (frame !== 0) return
+          frame = window.requestAnimationFrame(() => {
+            frame = 0
+            apply()
+          })
+        }
+
+        apply()
+        // The DSH shell re-renders (panel switch, session updates) and React
+        // may overwrite the hidden styles. Keep re-applying while the window
+        // is open so only the Ink panel stays visible.
+        const observer = new MutationObserver(schedule)
+        observer.observe(document.body, {
+          subtree: true,
+          childList: true,
+          attributes: true,
+          attributeFilter: ['style', 'class'],
+        })
+
+        return () => {
+          observer.disconnect()
+          if (frame !== 0) window.cancelAnimationFrame(frame)
+          for (const [element, snapshot] of hidden) {
+            if (snapshot.value === '') element.style.removeProperty('display')
+            else element.style.setProperty('display', snapshot.value, snapshot.priority)
+          }
+          for (const [element, snapshot] of resized) {
+            for (const [name, entry] of Object.entries(snapshot)) {
+              if (entry[0] === '') element.style.removeProperty(name)
+              else element.style.setProperty(name, entry[0], entry[1])
+            }
+          }
+          if (bodyOverflow !== null) {
+            if (bodyOverflow[0] === '') document.body.style.removeProperty('overflow')
+            else document.body.style.setProperty('overflow', bodyOverflow[0], bodyOverflow[1])
+          }
+          if (previousTitle !== null) document.title = previousTitle
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [])
+
+      useEffect(() => {
         const timer = setInterval(() => {
           const win = standaloneWindowRef.current
           if (win !== null && win.closed) {
@@ -3689,8 +4148,12 @@ window.__ModuleLoader__.load({
         void (async () => {
           try {
             const result = await request('/window')
-            if (!alive || result.status !== 200 || result.body?.mode !== 'electron') return
-            setStandaloneOpen(result.body.open === true)
+            if (!alive || result.status !== 200) return
+            nativeWindowMode.current =
+              result.body?.mode === 'electron' || result.body?.mode === 'windows'
+            if (nativeWindowMode.current) {
+              setStandaloneOpen(result.body.open === true)
+            }
           } catch {
             // No native window route on an older host.
           }
@@ -3707,8 +4170,12 @@ window.__ModuleLoader__.load({
           void (async () => {
             try {
               const result = await request('/window')
-              if (!alive || result.status !== 200 || result.body?.mode !== 'electron') return
-              setStandaloneOpen(result.body.open === true)
+              if (!alive || result.status !== 200) return
+              nativeWindowMode.current =
+                result.body?.mode === 'electron' || result.body?.mode === 'windows'
+              if (nativeWindowMode.current) {
+                setStandaloneOpen(result.body.open === true)
+              }
             } catch {
               // Ignore transient route failures.
             }
@@ -3720,6 +4187,23 @@ window.__ModuleLoader__.load({
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [])
+
+      useEffect(() => {
+        if (!floatingOpen || !floatingMaximized) return
+        const update = () => setFloatingRect(getFloatingMaxRect())
+        update()
+        window.addEventListener('resize', update)
+        let observer = null
+        const root = rootRef.current
+        if (root !== null && typeof ResizeObserver === 'function') {
+          observer = new ResizeObserver(update)
+          observer.observe(root)
+        }
+        return () => {
+          window.removeEventListener('resize', update)
+          if (observer !== null) observer.disconnect()
+        }
+      }, [floatingOpen, floatingMaximized])
 
       useEffect(() => {
         const timer = setInterval(async () => {
@@ -5660,7 +6144,7 @@ window.__ModuleLoader__.load({
           },
           t('refresh'),
         ),
-        ...(standaloneMode
+        ...(standaloneMode || floating
           ? []
           : [
               h(
@@ -5670,10 +6154,10 @@ window.__ModuleLoader__.load({
                   icon: 'external',
                   iconOnly,
                   onClick: toggleStandaloneWindow,
-                  primary: standaloneOpen,
+                  primary: standaloneOpen || floatingOpen,
                   title: t('popoutHint'),
                 },
-                standaloneOpen ? t('popoutClose') : t('popout'),
+                standaloneOpen || floatingOpen ? t('popoutClose') : t('popout'),
               ),
             ]),
         h(
@@ -5930,6 +6414,96 @@ window.__ModuleLoader__.load({
             ),
       )
 
+      const floatingWindow =
+        floatingOpen && floatingRect !== null
+          ? h(
+              'div',
+              {
+                style: {
+                  ...S.floatingWindow,
+                  left: floatingRect.left,
+                  top: floatingRect.top,
+                  width: floatingRect.width,
+                  height: floatingMinimized ? 32 : floatingRect.height,
+                },
+              },
+              h(
+                'div',
+                {
+                  style: S.floatingBar,
+                  onMouseDown: startFloatingDrag,
+                  onDoubleClick: (event) => {
+                    if (!(event.target instanceof Element) || !event.target.closest('button')) {
+                      toggleFloatingMaximize()
+                    }
+                  },
+                },
+                h(
+                  'span',
+                  { style: { fontSize: 12, fontWeight: 600 } },
+                  t('floatingTitle'),
+                ),
+                h('span', { style: { flex: 1 } }),
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    title: floatingMinimized ? t('restoreWindow') : t('minimizeWindow'),
+                    onMouseDown: (event) => event.stopPropagation(),
+                    onClick: toggleFloatingMinimize,
+                    style: S.floatingAction,
+                  },
+                  floatingMinimized ? '▢' : '—',
+                ),
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    title: floatingMaximized ? t('restoreWindow') : t('maximizeWindow'),
+                    onMouseDown: (event) => event.stopPropagation(),
+                    onClick: toggleFloatingMaximize,
+                    style: S.floatingAction,
+                  },
+                  floatingMaximized ? '❐' : '□',
+                ),
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    title: t('close'),
+                    onMouseDown: (event) => event.stopPropagation(),
+                    onClick: closeFloatingWindow,
+                    style: S.floatingAction,
+                  },
+                  '×',
+                ),
+              ),
+              h(
+                'div',
+                { style: { ...S.floatingBody, display: floatingMinimized ? 'none' : 'flex' } },
+                h(InkPanel, {
+                  pickDirectory: props?.pickDirectory,
+                  floating: true,
+                  initialRoot: rootDir,
+                  initialFile: current,
+                }),
+              ),
+              floatingMinimized || floatingMaximized
+                ? null
+                : h('div', {
+                    title: t('dragResize'),
+                    onMouseDown: startFloatingResize,
+                    style: S.floatingResize,
+                  }),
+            )
+          : null
+      const floatingPortal =
+        floatingWindow === null
+          ? null
+          : ReactDOM !== null && typeof ReactDOM.createPortal === 'function'
+            ? ReactDOM.createPortal(floatingWindow, document.body)
+            : floatingWindow
+
       return h(
         'div',
         {
@@ -5939,6 +6513,7 @@ window.__ModuleLoader__.load({
             '--dsh-ink-accent-contrast': accentContrast,
             '--dsh-ink-fold-highlight': foldHighlight,
           },
+          'data-dsh-ink-root': '1',
           ref: rootRef,
         },
         h('style', { key: 'ink-theme' }, HL_STYLES),
@@ -8050,6 +8625,7 @@ window.__ModuleLoader__.load({
               },
             })
           : null,
+        floatingPortal,
       )
     }
 
@@ -8115,7 +8691,14 @@ window.__ModuleLoader__.load({
               {
                 name: 'main',
                 key: PANEL_ID,
-                inject: () => ({ pickDirectory: () => ctx.uiWorkspace.pickDirectory() }),
+                inject: () => ({
+                  pickDirectory: () =>
+                    standaloneMode
+                      ? Promise.resolve(
+                          window.prompt('Ink 项目目录路径') || undefined,
+                        )
+                      : ctx.uiWorkspace.pickDirectory(),
+                }),
               },
               InkPanel,
             )

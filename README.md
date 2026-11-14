@@ -107,7 +107,7 @@
 - 折叠查看开关、折叠标题高亮色；
 - 说话人颜色、行背景标识开关与强度；
 - 「界面」按钮打开「界面按钮」窗口，用勾选决定哪些动作按钮显示在工具栏；外观和界面按钮始终保留；可全选/全不选/恢复默认；
-- **独立窗口**：工具栏「独立窗口」按钮在 DSH Desktop 下由 Host 打开一个**原生 Electron 窗口**（共享主窗口 session，不需要浏览器弹窗权限）；DSH Web 下退回浏览器弹窗。URL 带 `dsh-ink-window=1`，打开后自动切到 Ink，再点一次关闭。窗口里仍是完整的 DSH UI，不是无边框纯插件窗口；两个窗口的标签页和未保存缓冲区不共享，建议只在一个窗口里编辑。如果 DSH Desktop 的 Host 没拿到 Electron 能力，会自动退回 Web 弹窗。
+- **独立窗口**：工具栏「独立窗口」按钮按顺序尝试：原生 Electron 窗口 → **Edge/Chrome 的 `--app` Windows 独立窗口**（Host 用 `ctx.connection.authenticatedUrl` 生成带登录 token 的 URL，DSH 主窗口保持可见）→ DSH 内部可拖动/可缩放浮窗。Windows 窗口不经过 `window.open`，不会被 DSH 外壳拦截；会带上当前项目/文件，打开后自动切到 Ink。**Windows 窗口里会自动隐藏 DSH 外壳，只显示 Ink 面板**（项目目录选择改成输入路径的 prompt）；窗口里的设置/未保存缓冲区和主窗口独立，建议只在一个窗口里编辑。没有 Edge/Chrome 或 Host 拿不到 Electron 时才退回内部浮窗。
 - 工具栏可放在左侧或顶部，可拖动位置、收起/展开左右栏、拖动调宽。
 
 ### 自动备份
