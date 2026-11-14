@@ -1,16 +1,17 @@
 <div align="center">
-  <img src="docs/images/banner.svg" alt="inky-DSH — Ink 写作面板 for DSH" width="100%" />
+  <img src="https://raw.githubusercontent.com/keyiyan2/inky-DSH/main/docs/images/banner.svg" alt="inky-DSH — Ink 写作面板 for DSH" width="100%" />
   <h1>inky-DSH</h1>
   <p><strong>在 DSH Web UI 里写 inkle/ink 剧本</strong><br />
   标签选择 · 折叠 · 多标签页 · 实时预览 · 变量观察 · 蓝图 · 结构树</p>
   <p>
+    <img alt="npm" src="https://img.shields.io/badge/npm-ready-6bdb9f?style=flat-square" />
     <img alt="DSH" src="https://img.shields.io/badge/DSH-plugin-4ea1ff?style=flat-square" />
     <img alt="inkle/ink" src="https://img.shields.io/badge/inkle%2Fink-1.1-1f2430?style=flat-square" />
     <img alt="MIT" src="https://img.shields.io/badge/license-MIT-6bdb9f?style=flat-square" />
   </p>
 </div>
 
-![界面总览：文件栏、标签页、编辑区、变量预览与写一句](docs/images/overview.svg)
+![界面总览：文件栏、标签页、编辑区、变量预览与写一句](https://raw.githubusercontent.com/keyiyan2/inky-DSH/main/docs/images/overview.svg)
 
 ## 简介
 
@@ -56,7 +57,7 @@
 - 「插入新句」在光标前插入整行；「只给当前行加标签」保留原文字和 `->`，只替换/追加标签；
 - **预设**：默认一个，点 `+` 用当前设置新建；点预设套用；「存预设」更新；每个预设显示保存的标签预览，可删除；预设保存在 localStorage。
 
-![写一句面板与预设](docs/images/composer.svg)
+![写一句面板与预设](https://raw.githubusercontent.com/keyiyan2/inky-DSH/main/docs/images/composer.svg)
 
 ### 多标签页与开始面板
 
@@ -78,7 +79,7 @@
 - 预览底部有一个可折叠的「变量」面板，实时列出全局和当前变量的当前值；停在选项时也能看到当前快照；
 - 只统计剧本里自己定义的变量，不包含引擎内部状态；初始值只显示在面板里，不算变化。
 
-![预览与变量](docs/images/preview.svg)
+![预览与变量](https://raw.githubusercontent.com/keyiyan2/inky-DSH/main/docs/images/preview.svg)
 
 ### 结构、蓝图与词库
 
@@ -109,42 +110,53 @@
 - 已安装 **DSH Desktop / DSH Web**；
 - 可选：安装 [Inky](https://github.com/inkle/inky)（用于从面板启动 Inky 和文件热更新；预览本身使用仓库内置的 inkjs，不依赖 Inky）。
 
-### 1. 克隆仓库
+### 方式 A：从 npm 安装（发布后推荐）
+
+本仓库已按 npm 包准备，包名 **`inky-dsh`**。发布到 npm 后，在 DSH 的插件管理 / 插件市场里安装 `inky-dsh`，启用后配置 `projectDir` 即可。
+
+> 如果 npm 上还搜不到 `inky-dsh`，说明维护者尚未发布，请先用方式 B；发布后即可用一条包名安装，不用再手动拷目录。
+
+### 方式 B：从 GitHub 手动安装（现在可用）
+
+1. 克隆仓库：
 
 ```bash
 git clone https://github.com/keyiyan2/inky-DSH.git
 ```
 
-### 2. 放进 DSH 的插件目录
-
-把仓库放到当前 DSH profile 的 `plugins/dsh-ink`：
+2. 把仓库放进当前 DSH profile 的 `plugins/inky-dsh`：
 
 ```text
-%USERPROFILE%\.dsh\profiles\<profile>\plugins\dsh-ink
+%USERPROFILE%\.dsh\profiles\<profile>\plugins\inky-dsh
 ```
 
 例如 Windows 下：
 
 ```powershell
-Copy-Item -Recurse .\inky-DSH "$env:USERPROFILE\.dsh\profiles\desktop\plugins\dsh-ink"
+Copy-Item -Recurse .\inky-DSH "$env:USERPROFILE\.dsh\profiles\desktop\plugins\inky-dsh"
 ```
 
-### 3. 启用插件
-
-刷新 DSH / 重启 DSH 后，在插件列表里启用 `dsh-ink`（本地 bundle `@local/dsh-ink`）。如果使用自定义 profile 的组合文件，把仓库里的 `cordis.patch.yml` 合并进 profile，或在插件设置里添加同样的配置：
+3. 刷新 / 重启 DSH，在插件列表里启用 `inky-dsh`。如果使用自定义 profile 的组合文件，把仓库里的 `cordis.patch.yml` 合并进 profile，或在插件设置里添加同样的配置：
 
 ```yaml
 - insert:
     - id: dsh-ink
-      name: '@local/dsh-ink'
+      name: 'inky-dsh'
       config:
         projectDir: 'D:\你的Ink项目'
         inkyPath: 'D:\inky\Inky_windows_64\Inky.exe'
 ```
 
-### 4. 打开面板
+4. 打开 DSH Web UI，在侧边栏点击 Ink（笔尖）图标；第一次使用先设置项目目录。
 
-打开 DSH Web UI，在侧边栏点击 Ink（笔尖）图标；第一次使用先设置项目目录。
+### 发布（维护者）
+
+```bash
+npm login
+npm publish
+```
+
+仓库包含 `.github/workflows/publish.yml`：在 GitHub 创建 Release（或手动触发 workflow）时自动发布到 npm。需要在仓库 Secrets 里配置 `NPM_TOKEN`（npm Automation token）；首次发布前先确认包名 `inky-dsh` 仍可用。
 
 ## 配置
 
@@ -186,7 +198,7 @@ Copy-Item -Recurse .\inky-DSH "$env:USERPROFILE\.dsh\profiles\desktop\plugins\ds
 inky-DSH/
 ├── README.md
 ├── LICENSE
-├── package.json              # @local/dsh-ink，DSH bundle 声明
+├── package.json              # inky-dsh，DSH bundle / npm 包声明
 ├── cordis.patch.yml          # Host 侧插入配置
 ├── index.js                  # Host：目录、读写、inkjs 编译、预览会话
 ├── client.js                 # Web UI：编辑器、标签页、面板、预览
@@ -197,6 +209,8 @@ inky-DSH/
 ├── vendor/inkjs/
 │   ├── ink-full.mjs          # 官方 inkjs（MIT）的 vendored 构建
 │   └── LICENSE.md
+├── .github/workflows/
+│   └── publish.yml           # Release 时自动 npm publish
 └── docs/images/              # README 示意图
 ```
 

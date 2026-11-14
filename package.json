@@ -1,22 +1,33 @@
 {
-  "name": "@local/dsh-ink",
+  "name": "inky-dsh",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "description": "Ink 写作面板：在 DSH 里写 inkle/ink 台词，用下拉选择 #speaker/#portrait/#layout 标签，保存即写入 Inky 项目并由 Inky 热更新。",
   "license": "MIT",
+  "author": "keyiyan2",
   "repository": {
     "type": "git",
     "url": "https://github.com/keyiyan2/inky-DSH.git"
   },
   "homepage": "https://github.com/keyiyan2/inky-DSH#readme",
+  "bugs": {
+    "url": "https://github.com/keyiyan2/inky-DSH/issues"
+  },
   "keywords": [
     "dsh",
     "ink",
     "inkle",
     "writing",
-    "cordis-plugin"
+    "cordis-plugin",
+    "inky"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "node --check index.js && node --check client.js",
+    "prepublishOnly": "npm test"
+  },
   "icon": "./icon.svg",
   "exports": {
     ".": "./index.js",
@@ -32,7 +43,8 @@
     "locale/*.json",
     "icon.svg",
     "vendor/inkjs/*",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "dsh": {
     "bundle": {

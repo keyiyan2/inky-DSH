@@ -1,6 +1,6 @@
 - insert:
     - id: dsh-ink
-      name: '@local/dsh-ink'
+      name: 'inky-dsh'
       config:
         projectDir: 'D:\inky\project'
         inkyPath: 'D:\inky\Inky_windows_64\Inky.exe'
