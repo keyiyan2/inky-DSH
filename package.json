@@ -26,7 +26,7 @@
   },
   "scripts": {
     "test": "node --check index.js && node --check client.js",
-    "prepublishOnly": "npm test"
+    "prepublishOnly": "node --check index.js && node --check client.js"
   },
   "icon": "./icon.svg",
   "exports": {
