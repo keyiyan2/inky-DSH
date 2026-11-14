@@ -110,13 +110,37 @@
 - 已安装 **DSH Desktop / DSH Web**；
 - 可选：安装 [Inky](https://github.com/inkle/inky)（用于从面板启动 Inky 和文件热更新；预览本身使用仓库内置的 inkjs，不依赖 Inky）。
 
-### 方式 A：从 npm 安装（发布后推荐）
+### 方式 A：把 GitHub 地址直接交给 DSH（推荐，现在可用）
+
+DSH 的插件安装器支持 **git URL / GitHub 地址**，不需要先发布 npm。打开 DSH 的「插件」页，点安装，填入：
+
+```text
+https://github.com/keyiyan2/inky-DSH.git
+```
+
+也可以填不带 `.git` 的仓库地址：
+
+```text
+https://github.com/keyiyan2/inky-DSH
+```
+
+DSH 会从 GitHub 拉取仓库，读取 `package.json` 里的 `dsh.bundle`，安装并应用 `cordis.patch.yml`。安装完成后：
+
+1. 在插件列表启用 `inky-dsh`（入口 id 是 `dsh-ink`）；
+2. 配置 `projectDir` 为你的 Ink 项目目录（见下方配置表）；
+3. 刷新 DSH，在侧边栏点 Ink（笔尖）图标。
+
+> 从 git 安装可能比 npm 慢（要拉取仓库），DSH 的插件管理器可能把它放到后台任务；等安装完成后再启用。
+
+### 方式 B：从 npm 安装（发布后）
 
 本仓库已按 npm 包准备，包名 **`inky-dsh`**。发布到 npm 后，在 DSH 的插件管理 / 插件市场里安装 `inky-dsh`，启用后配置 `projectDir` 即可。
 
-> 如果 npm 上还搜不到 `inky-dsh`，说明维护者尚未发布，请先用方式 B；发布后即可用一条包名安装，不用再手动拷目录。
+> 如果 npm 上还搜不到 `inky-dsh`，说明维护者尚未发布，请用方式 A 或 C；发布后即可用一条包名安装。
 
-### 方式 B：从 GitHub 手动安装（现在可用）
+### 方式 C：从 GitHub 手动安装（旧版 DSH 兜底）
+
+如果当前 DSH 的插件安装器不接受 git URL：
 
 1. 克隆仓库：
 
