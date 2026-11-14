@@ -9,6 +9,8 @@
     <img alt="inkle/ink" src="https://img.shields.io/badge/inkle%2Fink-1.1-1f2430?style=flat-square" />
     <img alt="MIT" src="https://img.shields.io/badge/license-MIT-6bdb9f?style=flat-square" />
   </p>
+  <p><strong>DSH 插件页直接安装：</strong><br />
+  <code>https://github.com/keyiyan2/inky-DSH.git</code></p>
 </div>
 
 ![界面总览：文件栏、标签页、编辑区、变量预览与写一句](https://raw.githubusercontent.com/keyiyan2/inky-DSH/main/docs/images/overview.svg)
@@ -131,6 +133,14 @@ DSH 会从 GitHub 拉取仓库，读取 `package.json` 里的 `dsh.bundle`，安
 3. 刷新 DSH，在侧边栏点 Ink（笔尖）图标。
 
 > 从 git 安装可能比 npm 慢（要拉取仓库），DSH 的插件管理器可能把它放到后台任务；等安装完成后再启用。
+
+命令行等价：
+
+```bash
+dsh plugin --profile <profile> add https://github.com/keyiyan2/inky-DSH.git
+```
+
+> 如果当前 profile 里已经有本地版 `dsh-ink`（例如从旧版仓库复制到 `plugins/` 的），请先移除或禁用它，避免重复入口 id；全新 profile 不会遇到这个问题。
 
 ### 方式 B：从 npm 安装（发布后）
 
